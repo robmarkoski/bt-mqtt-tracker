@@ -42,7 +42,7 @@ On the software side, you need to install the following;
 
 ```bash
 
-$ sudo apt install bluetooth libbluetooth-dev
+$ sudo apt install bluetooth libbluetooth-dev python3-bluez
 $ pip3 install pybluez
 $ pip3 install paho-mqtt
 $ pip3 install pyyaml
@@ -175,13 +175,15 @@ For example create a file called update_devices.sh
 
 ```bash
 #!/bin/bash
-wget http://somelocaaddress/devices.yaml
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+curl -s -o ${DIR}/devices.yaml http://some_local_server/devices.yaml
+
 ```
 
 Then edit your ```crontab -e``` with a daily run via
 
 ```bash
-* 0 * * * /home/pi/bt-mqtt-tracker/update_devices.sh >/dev/null 2>&1
+* 0 * * * /home/pi/priv-ha-bt-tracker/update_devices.sh >/dev/null 2>&1
 
 ```
 
