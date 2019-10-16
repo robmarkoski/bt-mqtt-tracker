@@ -1,0 +1,7 @@
+devices:
+  - name: "user1"
+    description: "iPhone"
+    mac: "mac"
+  - name: "user2"
+    mac: "mac"
+    description: "iPhone"

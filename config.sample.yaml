@@ -1,0 +1,20 @@
+general:
+  device_name: devicename
+  device_location: somelocation
+  status_update: 15 # Seconds
+
+mqtt:
+  user: "mqtt"
+  password: "password"
+  host: "127.0.0.1"
+  port: 1883 
+  state_prefix: "HomeAssistant/PRESENCE"
+  qos: 0 
+
+bluetooth:
+  timeout: 3
+
+logging:
+  file_name: "pilocator.log"
+  level: info
+  #console: debug 

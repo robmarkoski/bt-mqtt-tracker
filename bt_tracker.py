@@ -1,85 +1,155 @@
 #!/usr/bin/python3
 #
-#   Bluetooth Device Tracking MQTT Client for Raspberry Pi (or others)
+#   Bluetooth Dervice Tracking MQTT Client for Raspberry Pi (or others)
 #
-#   Version:    0.1
+#   Version:    0.2.0
 #   Status:     Development
 #   Github:     https://github.com/robmarkoski/bt-mqtt-tracker
-# 
 
 import os
 import time
 import logging
+import json
+import socket
+from bt_rssi import BluetoothRSSI
 
-import bluetooth
-import paho.mqtt.publish as publish
-import paho.mqtt.client as mqtt
+try:
+    import paho.mqtt.publish as publish
+    import paho.mqtt.client as mqtt
+except ImportError as error:
+    raise ImportError("Can't Import Paho-Mqtt \n Install with \"pip3 install paho-mqtt\"\n {}".format(error))    
 
-# Add the name and Mac address of the each device. The name will be used as part of the state topic.
-devices = [
-    {"name": "Device1", "mac": "aa:bb:cc:dd:ee:ff", "state": "not home"},
-    {"name": "Device2", "mac": "aa:bb:cc:dd:ee:f2", "state": "not home"}
-    ]
+try:
+    import bluetooth
+except ImportError as error:
+    raise ImportError("Can't Import bluetooth \n Install with \"pip3 install pybluez\"\n {}".format(error))
+try:
+    import yaml
+except ImportError as error:
+    raise ImportError("Can't Import PyYaml \n Install with \"pip3 install pyyaml\"\n {}".format(error))
 
-# Provide name of the location where device is (this will form part of the state topic)
-LOCATION = "Location"
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
-# The final state topic will therefore be: HomeAssistant/Presence/LOCATION/DEVICE_NAME
+try:
+    ymlfile = open(SCRIPT_DIR + "/config.yaml", 'r') 
+except IOError:
+    raise IOError("Error: Cant open config file")
+with ymlfile:
+    cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
 
-# Update the follow MQTT Settings for your system.
-MQTT_USER = "mqtt"              # MQTT Username
-MQTT_PASS = "mqtt_password"     # MQTT Password
-MQTT_CLIENT_ID = "bttracker"    # MQTT Client Id
-MQTT_HOST_IP = "127.0.0.1"      # MQTT HOST
-MQTT_PORT = 1883                # MQTT PORT (DEFAULT 1883)
+try:
+    ymlfile = open(SCRIPT_DIR + "/devices.yaml", 'r') 
+except IOError:
+    raise IOError("Error: Cant open devices file")
+with ymlfile:
+    dvc = yaml.load(ymlfile, Loader=yaml.FullLoader)
 
+devices = dvc['devices']
 
-SCAN_TIME = 30  # Interval Between Scans
-BLU_TIMEOUT = 3 # How long during scan before there is a timeout.
+LOCATION = cfg['general'].get('device_location', socket.gethostname())
+DEVICE_NAME = cfg['general'].get('device_name', socket.gethostname())
+SCAN_TIME = cfg['general'].get('status_update', 5)
+BLU_TIMEOUT = cfg['bluetooth'].get('timeout', 3)
 
-# Set up logging.
-LOG_NAME = "bt_tracker.log"      # Name of log file
-LOG_LEVEL = logging.NOTSET       # Change to DEBUG for debugging. INFO For basic Logging or NOTSET to turn off
-
-
-# SHOULDNT NEED TO CHANGE BELOW
+############### MQTT ######################
+MQTT_USER = cfg['mqtt']['user']
+MQTT_PASS = cfg['mqtt']['password']
+MQTT_CLIENT_ID = "MQTT_" + DEVICE_NAME
+MQTT_HOST_IP = cfg['mqtt']['host']
+MQTT_PORT = cfg['mqtt'].get('port', 1883)
+MQTT_QOS = cfg['mqtt'].get('qos', 0)
 MQTT_AUTH = {
     'username': MQTT_USER,
     'password': MQTT_PASS
 }
-LOG_FORMAT = "%(asctime)-15s %(message)s"
-SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__)) + "/"
-LOG_FILE = SCRIPT_DIR + LOG_NAME
-logging.basicConfig(filename=LOG_FILE,
-                    level=LOG_LEVEL,
-                    format=LOG_FORMAT,
-                    datefmt='%Y-%m-%d %H:%M:%S')
+MQTT_STATE_PREFIX = cfg['mqtt']['state_prefix'] + "/" + LOCATION
+MQTT_STATE_TOPIC = MQTT_STATE_PREFIX + "/{}/state"
+
+########### LOGGING SETUP #############
+LOG_FILE_NAME = cfg['logging']['file_name']
+LOG_FILE = SCRIPT_DIR + "/" + LOG_FILE_NAME
+LOG_LEVEL = cfg['logging'].get('level', "INFO")
+LOG_LEVEL_NUM = getattr(logging, LOG_LEVEL.upper(), None)
+# Set log level https://docs.python.org/3/howto/logging.html#logging-basic-tutorial
+if not isinstance(LOG_LEVEL_NUM, int):
+    raise ValueError("Invalid log level: %s" % LOG_LEVEL)
+LOG_FORMAT = "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logFormatter = logging.Formatter(LOG_FORMAT)
+if cfg['logging'].get('filename'):
+    fileHandler = logging.FileHandler(LOG_FILE)
+    fileHandler.setLevel(LOG_LEVEL_NUM)
+    fileHandler.setFormatter(logFormatter)
+    logger.addHandler(fileHandler)
+
+if cfg['logging'].get('console'):
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setLevel(getattr(logging, cfg['logging']['console'].upper(), None))
+    consoleHandler.setFormatter(logFormatter)
+    logger.addHandler(consoleHandler)
+
+
+def lookup_device(mac: str):
+    """ Look for Bluetooth Device
+        mac: Mac address of device
+    """
+    logger.debug("Looking for device: {}".format(mac))
+    result = bluetooth.lookup_name(mac, timeout=BLU_TIMEOUT)
+    logger.debug("Result of Lookup: {}".format(result))
+
+    return result
+
+
+def lookup_rssi(mac: str):
+    """ Get Rssi of Device
+        mac: mac address of device
+    """
+    logger.debug("Getting RSSI of: {}".format(mac))
+    rssi = None
+    client = BluetoothRSSI(mac)
+    rssi = client.request_rssi()
+    logger.debug("Raw RSS: {}".format(rssi))
+    if rssi is None:
+        logger.debug("No RSSI Information")
+        return "None"
+    else:
+        logger.debug("Device RSSI: {}".format(rssi[0]))
+        return rssi[0]
+    client.close()
 
 try:
-    logging.info("Starting BLE Tracker Server")
+    logger.info("Starting BLE Tracker Server")
+
     while True:
         for device in devices:
             mac = device['mac']
-            logging.debug("Checking for {}".format(mac))
-            result = bluetooth.lookup_name(mac, timeout=BLU_TIMEOUT)
+            result = lookup_device(mac)            
             if result:
                 device['state'] = "home"
-                logging.debug("Device Found!")
+                logger.debug("Device Found!")
+                rssi = lookup_rssi(mac)
+                device['rssi'] = rssi
+
             else:
-                device['state'] = "not home"
-                logging.debug("Device Not Found!")
+                device['rssi'] = "None"
+                device['state'] = "not_home"
+                logger.debug("Device Not Found!")
             try:
-                publish.single("HomeAssistant/Presence/" + LOCATION + "/" + device['name'],
-                    payload=device['state'],
-                    hostname=MQTT_HOST_IP,
-                    client_id=MQTT_CLIENT_ID,
-                    auth=MQTT_AUTH,
-                    port=MQTT_PORT,
-                    protocol=mqtt.MQTTv311)
+                logger.debug("Publishing to state topic: {}".format(MQTT_STATE_TOPIC.format(device['name'])))
+                logger.debug("Data to be published:\n {}".format(json.dumps(device)))
+                publish.single(MQTT_STATE_TOPIC.format(device['name']),
+                               payload=json.dumps(device),
+                               hostname=MQTT_HOST_IP,
+                               client_id=MQTT_CLIENT_ID,
+                               auth=MQTT_AUTH,
+                               port=MQTT_PORT,
+                               protocol=mqtt.MQTTv311)
             except:
-                logging.exception("MQTT Publish Error")
+                logger.exception("MQTT Publish Error")
         time.sleep(SCAN_TIME)
 except KeyboardInterrupt:
-    logging.info("KEY INTERRUPT - STOPPING SERVER")
-except:
-    logging.exception("BLUETOOTH SERVER ERROR")
+    logger.info("KEY INTERRUPT - STOPPING SERVER")
+except bluetooth.BluetoothError:
+    logger.exception("BLUETOOTH ERROR")
